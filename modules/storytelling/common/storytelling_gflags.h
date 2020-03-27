@@ -14,39 +14,9 @@
  * limitations under the License.
  *****************************************************************************/
 
-/**
- * @file
- **/
-
 #pragma once
 
-#include <memory>
-#include <string>
-#include <vector>
+#include "gflags/gflags.h"
 
-#include "modules/common/proto/pnc_point.pb.h"
-#include "modules/planning/proto/planning.pb.h"
-
-#include "modules/common/status/status.h"
-#include "modules/planning/scenarios/scenario.h"
-#include "modules/planning/scenarios/stage.h"
-
-namespace apollo {
-namespace planning {
-namespace scenario {
-
-class TestLearningModelStage : public Stage {
- public:
-  explicit TestLearningModelStage(const ScenarioConfig::StageConfig& config);
-
-  StageStatus Process(const common::TrajectoryPoint& planning_init_point,
-                      Frame* frame) override;
-
- private:
-  ScenarioConfig config_;
-  std::unique_ptr<Stage> stage_;
-};
-
-}  // namespace scenario
-}  // namespace planning
-}  // namespace apollo
+DECLARE_double(search_radius);
+DECLARE_double(adc_trajectory_search_distance);

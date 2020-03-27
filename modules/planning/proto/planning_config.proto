@@ -194,6 +194,8 @@ message ScenarioYieldSignConfig {
 }
 
 message ScenarioTestLearningModelConfig {
+  optional string model_file = 1;
+  optional int32 input_feature_num = 2;
 }
 
 // scenario configs

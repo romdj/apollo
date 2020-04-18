@@ -20,7 +20,6 @@
 #include <memory>
 #include <string>
 
-#include "absl/strings/str_cat.h"
 #include "cyber/common/file.h"
 #include "cyber/record/record_reader.h"
 #include "modules/common/adapters/adapter_gflags.h"
@@ -33,7 +32,6 @@
 
 DEFINE_string(planning_data_dir, "/apollo/modules/planning/data/",
               "Prefix of files to store learning_data_frame data");
-DEFINE_int32(localization_freq, 100, "frequence of localization message");
 DEFINE_int32(planning_freq, 10, "frequence of planning message");
 DEFINE_int32(learning_data_frame_num_per_file, 100,
              "number of learning_data_frame to write out in one data file.");
@@ -76,8 +74,15 @@ void FeatureGenerator::Init() {
   map_m_["San Mateo"] = "san_mateo";
 }
 
-void FeatureGenerator::WriteOutLearningData(const LearningData& learning_data,
-                                            const std::string& file_name) {
+void FeatureGenerator::WriteOutLearningData(
+    const LearningData& learning_data,
+    const int learning_data_file_index) {
+  if (record_file_name_.empty()) {
+    record_file_name_ = "00000";
+  }
+  const std::string file_name = absl::StrCat(
+      FLAGS_planning_data_dir, record_file_name_, ".",
+      learning_data_file_index, ".bin");
   if (FLAGS_enable_binary_learning_data) {
     cyber::common::SetProtoToBinaryFile(learning_data, file_name);
     cyber::common::SetProtoToASCIIFile(learning_data, file_name + ".txt");
@@ -89,41 +94,39 @@ void FeatureGenerator::WriteOutLearningData(const LearningData& learning_data,
 }
 
 void FeatureGenerator::Close() {
-  const std::string file_name = absl::StrCat(
-      FLAGS_planning_data_dir, "/learning_data.",
-      learning_data_file_index_, ".bin");
-  WriteOutLearningData(learning_data_, file_name);
+  WriteOutLearningData(learning_data_, learning_data_file_index_);
   AINFO << "Total learning_data_frame number:"
         << total_learning_data_frame_num_;
 }
 
-void FeatureGenerator::OnLocalization(
-    const apollo::localization::LocalizationEstimate& le) {
-  localization_for_label_.push_back(le);
-
-  const int localization_msg_start_cnt =
-      FLAGS_localization_freq * FLAGS_trajectory_time_length;
-  if (static_cast<int>(localization_for_label_.size()) <
-      localization_msg_start_cnt) {
+void FeatureGenerator::OnLocalization(const LocalizationEstimate& le) {
+  static double last_localization_timestamp_sec = 0.0;
+  if (last_localization_timestamp_sec == 0.0) {
+    last_localization_timestamp_sec = le.header().timestamp_sec();
+  }
+  if (le.header().timestamp_sec() - last_localization_timestamp_sec <
+      1.0 / FLAGS_planning_freq) {
     return;
   }
+  last_localization_timestamp_sec = le.header().timestamp_sec();
+  localizations_.push_back(le);
 
   // generate one frame data
   GenerateLearningDataFrame();
 
-  const int localization_move_window_step =
-      FLAGS_localization_freq / FLAGS_planning_freq;
-  for (int i = 0; i < localization_move_window_step; ++i) {
-    localization_for_label_.pop_front();
+  while (!localizations_.empty()) {
+    if (localizations_.back().header().timestamp_sec() -
+        localizations_.front().header().timestamp_sec()
+        < FLAGS_trajectory_time_length) {
+      break;
+    }
+    localizations_.pop_front();
   }
 
   // write frames into a file
   if (learning_data_.learning_data_size() >=
       FLAGS_learning_data_frame_num_per_file) {
-    const std::string file_name = absl::StrCat(
-        FLAGS_planning_data_dir, "/learning_data.",
-        learning_data_file_index_, ".bin");
-    WriteOutLearningData(learning_data_, file_name);
+    WriteOutLearningData(learning_data_, learning_data_file_index_);
   }
 }
 
@@ -262,14 +265,14 @@ apollo::hdmap::LaneInfoConstPtr FeatureGenerator::GetLane(
 
 apollo::hdmap::LaneInfoConstPtr FeatureGenerator::GetADCCurrentLane(
     int* routing_index) {
-  const auto& pose = localization_for_label_.back().pose();
+  const auto& pose = localizations_.back().pose();
   return GetLane(pose.position(), routing_index);
 }
 
 void FeatureGenerator::GetADCCurrentInfo(ADCCurrentInfo* adc_curr_info) {
   CHECK_NOTNULL(adc_curr_info);
   // ADC current position / velocity / acc/ heading
-  const auto& adc_cur_pose = localization_for_label_.back().pose();
+  const auto& adc_cur_pose = localizations_.back().pose();
   adc_curr_info->adc_cur_position_ =
       std::make_pair(adc_cur_pose.position().x(),
                      adc_cur_pose.position().y());
@@ -467,9 +470,15 @@ void FeatureGenerator::GenerateRoutingFeature(
 }
 
 void FeatureGenerator::GenerateADCTrajectoryPoints(
-    const std::list<apollo::localization::LocalizationEstimate>&
-        localization_for_label,
+    const std::list<LocalizationEstimate>& localizations,
     LearningDataFrame* learning_data_frame) {
+
+  // use a vector to help reverse traverse list of mutable field
+  std::vector<LocalizationEstimate> localization_samples;
+  for (const auto& le : localizations) {
+    localization_samples.insert(localization_samples.begin(), le);
+  }
+
   constexpr double kSearchRadius = 1.0;
 
   std::string clear_area_id;
@@ -486,27 +495,25 @@ void FeatureGenerator::GenerateADCTrajectoryPoints(
   double yield_sign_distance = 0.0;
 
   int trajectory_point_index = 0;
-  int i = -1;
-  const int localization_sample_interval_for_trajectory_point =
-      FLAGS_localization_freq / FLAGS_planning_freq;
-  for (const auto& le : localization_for_label) {
-    ++i;
-    if ((i % localization_sample_interval_for_trajectory_point) != 0) {
-      continue;
-    }
-    auto adc_trajectory_point = learning_data_frame->add_adc_trajectory_point();
-    adc_trajectory_point->set_timestamp_sec(le.measurement_time());
+  for (const auto& localization_sample : localization_samples) {
+    auto adc_trajectory_point =
+        learning_data_frame->add_adc_trajectory_point();
+    adc_trajectory_point->set_timestamp_sec(
+        localization_sample.measurement_time());
 
     auto trajectory_point = adc_trajectory_point->mutable_trajectory_point();
-    auto& pose = le.pose();
+    auto& pose = localization_sample.pose();
     trajectory_point->mutable_path_point()->set_x(pose.position().x());
     trajectory_point->mutable_path_point()->set_y(pose.position().y());
     trajectory_point->mutable_path_point()->set_z(pose.position().z());
     trajectory_point->mutable_path_point()->set_theta(pose.heading());
-    auto v = std::sqrt(pose.linear_velocity().x() * pose.linear_velocity().x() +
-                       pose.linear_velocity().y() * pose.linear_velocity().y());
+
+    const double v = std::sqrt(
+        pose.linear_velocity().x() * pose.linear_velocity().x() +
+        pose.linear_velocity().y() * pose.linear_velocity().y());
     trajectory_point->set_v(v);
-    auto a = std::sqrt(
+
+    const double a = std::sqrt(
         pose.linear_acceleration().x() * pose.linear_acceleration().x() +
         pose.linear_acceleration().y() * pose.linear_acceleration().y());
     trajectory_point->set_a(a);
@@ -518,6 +525,7 @@ void FeatureGenerator::GenerateADCTrajectoryPoints(
         pose.position().x(),
         pose.position().y(),
         pose.position().z());
+
     int routing_index;
     LaneInfoConstPtr lane = GetLane(cur_point, &routing_index);
     // lane_turn
@@ -657,6 +665,13 @@ void FeatureGenerator::GenerateADCTrajectoryPoints(
 
     ++trajectory_point_index;
   }
+
+  // planning_tag
+  if (learning_data_frame->adc_trajectory_point_size() >0) {
+    learning_data_frame->mutable_planning_tag()->set_lane_turn(
+        learning_data_frame->adc_trajectory_point(0).planning_tag()
+                                                    .lane_turn());
+  }
   // AINFO << "number of ADC trajectory points in one frame: "
   //       << trajectory_point_index;
 }
@@ -668,7 +683,7 @@ void FeatureGenerator::GenerateLearningDataFrame() {
   auto learning_data_frame = learning_data_.add_learning_data();
   // add timestamp_sec & frame_num
   learning_data_frame->set_timestamp_sec(
-      localization_for_label_.back().header().timestamp_sec());
+      localizations_.back().header().timestamp_sec());
   learning_data_frame->set_frame_num(total_learning_data_frame_num_++);
 
   // map_name
@@ -680,7 +695,7 @@ void FeatureGenerator::GenerateLearningDataFrame() {
 
   // add localization
   auto localization = learning_data_frame->mutable_localization();
-  const auto& pose = localization_for_label_.back().pose();
+  const auto& pose = localizations_.back().pose();
   localization->mutable_position()->CopyFrom(pose.position());
   localization->set_heading(pose.heading());
   localization->mutable_linear_velocity()->CopyFrom(pose.linear_velocity());
@@ -703,10 +718,12 @@ void FeatureGenerator::GenerateLearningDataFrame() {
   GenerateObstacleFeature(learning_data_frame);
 
   // add trajectory_points
-  GenerateADCTrajectoryPoints(localization_for_label_, learning_data_frame);
+  GenerateADCTrajectoryPoints(localizations_, learning_data_frame);
 }
 
 void FeatureGenerator::ProcessOfflineData(const std::string& record_filename) {
+  record_file_name_ =
+      record_filename.substr(record_filename.find_last_of("/") + 1);
   RecordReader reader(record_filename);
   if (!reader.IsValid()) {
     AERROR << "Fail to open " << record_filename;

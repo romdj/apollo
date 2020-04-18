@@ -82,21 +82,20 @@ class FeatureGenerator {
 
   void GenerateADCTrajectoryPoints(
       const std::list<apollo::localization::LocalizationEstimate>&
-          localization_for_label,
+          localizations,
       LearningDataFrame* learning_data_frame);
 
   void GenerateLearningDataFrame();
 
   void WriteOutLearningData(const LearningData& learning_data,
-                            const std::string& file_name);
+                            const int learning_data_file_index);
 
  private:
+  std::string record_file_name_;
   std::unordered_map<std::string, std::string> map_m_;
   LearningData learning_data_;
   int learning_data_file_index_ = 0;
-  std::list<apollo::localization::LocalizationEstimate>
-      localization_for_label_;
-
+  std::list<apollo::localization::LocalizationEstimate> localizations_;
   std::unordered_map<int, apollo::prediction::PredictionObstacle>
       prediction_obstacles_map_;
   std::unordered_map<int, std::list<PerceptionObstacleFeature>>

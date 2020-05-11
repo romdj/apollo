@@ -15,12 +15,13 @@
  *****************************************************************************/
 #pragma once
 
+#include <chrono>
+#include <ctime>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
 
-// #include "cyber/common/file.h"
-#include "modules/common/proto/pnc_point.pb.h"
 #include "modules/planning/proto/learning_data.pb.h"
 
 namespace apollo {
@@ -35,19 +36,33 @@ class Evaluator {
 
  private:
   void EvaluateTrajectoryByTime(
-      const std::vector<std::pair<double, common::TrajectoryPoint>>&
+      const int frame_num,
+      const std::string& obstacle_id,
+      const std::vector<std::pair<double, CommonTrajectoryPointFeature>>&
           trajectory,
-      const double relative_time,
-      std::vector<std::pair<double, common::TrajectoryPoint>>*
-          evaluated_trajectory);
+      const double start_point_timestamp_sec,
+      const double delta_time,
+      std::vector<TrajectoryPointFeature>* evaluated_trajectory);
 
-  void EvaluateADCTrajectory(LearningDataFrame* learning_data_frame);
-  void EvaluateADCFutureTrajectory(LearningDataFrame* learning_data_frame);
+  void EvaluateADCTrajectory(const double start_point_timestamp_sec,
+                             LearningDataFrame* learning_data_frame);
 
-  void WriteOutLearningData(const LearningData& learning_data);
+  void EvaluateADCFutureTrajectory(const double start_point_timestamp_sec,
+                                   LearningDataFrame* learning_data_frame);
+
+  void EvaluateObstacleTrajectory(const double start_point_timestamp_sec,
+                                  LearningDataFrame* learning_data_frame);
+
+  void EvaluateObstaclePredictionTrajectory(
+      const double start_point_timestamp_sec,
+      LearningDataFrame* learning_data_frame);
+
+  void WriteOutData(const std::string& source_filename,
+                    const LearningData& learning_data);
 
  private:
-  std::string source_filename_;
+  std::chrono::time_point<std::chrono::system_clock> start_time_;
+  std::ofstream log_file_;
   LearningData learning_data_;
 };
 
